@@ -3732,3 +3732,193 @@ NOTES:
   automatically — left as a TODO since two of the three
   tasks already use the helper directly and it's easy to
   copy-paste correctly.
+
+
+[2026-05-07 PROD DEPLOY] MULTILINGUAL HANDOFFS + COOKIE BANNER
+
+CONTEXT:
+- Caregivers should be able to submit notes in any language —
+  voice or text. The system auto-detects, translates to
+  English, lets the caregiver confirm, and the AI pipeline
+  reads the English translation natively. Source notes are
+  shown in both the original language and English wherever
+  flag/handoff source notes are displayed.
+- Cookie consent banner added to all pages, persisted via
+  localStorage so first-visit only.
+
+1. BACKEND — schema (migration 0004_multilingual_notes):
+   - Adds 4 nullable columns to shift_notes_raw:
+       original_language VARCHAR(10)
+       language_name     VARCHAR(50)
+       original_text     TEXT
+       translated_text   TEXT
+   - Backfills existing rows with original_language='en' so
+     downstream display logic ("show original + translation
+     only when original_language != 'en'") has a deterministic
+     starting state.
+   - Migration ran via `aws ecs run-task` with command
+     override `["alembic", "upgrade", "head"]` BEFORE the new
+     code went live, since the new model writes to columns
+     that didn't exist on the old schema.
+
+2. BACKEND — endpoint POST /shifts/{shift_id}/notes/translate:
+   - app/api/v1/handoffs.py: new translate_note() route
+     (rate-limited at 20/minute via new LIMITS["note_translate"]).
+     Same per-shift permission check as notes/audio + notes/text.
+     Body: { text, source_language? }. Response:
+     { original_text, detected_language, language_name,
+       translated_text, confidence }. Does NOT persist —
+     the caregiver UI uses it as a preview before submitting.
+   - app/services/ai_pipeline.py: detect_and_translate(text)
+     uses Claude with the exact prompt from the task spec
+     (system prompt name + JSON-only structure with
+     ISO 639-1 code, language_name, translated_text,
+     confidence). When ANTHROPIC_API_KEY is missing, returns a
+     safe English fallback (confidence=0) so the frontend
+     "skip translation" path takes over.
+   - app/schemas/shift_note.py: new TranslateRequest +
+     TranslateResponse pydantic models. NoteSubmitText
+     gained four optional language fields. Sanitization
+     applies to original_text/translated_text.
+
+3. BACKEND — note submission accepts language metadata:
+   - _persist_and_dispatch_note() in handoffs.py threads four
+     new optional kwargs through to the ShiftNoteRaw row:
+     original_language (defaults to 'en'), language_name,
+     original_text, translated_text. raw_text continues to
+     store the text the AI pipeline reads — when translation
+     occurred, raw_text == translated_text == English.
+   - submit_note_text reads them off the JSON body.
+   - submit_note_audio accepts them via multipart Form fields
+     (since voice submissions are multipart for the audio blob).
+   - GET /shifts/{shift_id}/notes/raw response (RawNoteRead in
+     app/api/v1/shifts.py) now exposes the four language
+     fields too, so the FlagDetailDrawer can render the
+     multilingual source-note view.
+
+4. FRONTEND — translation flow on HandoffSubmissionPage:
+   - frontend/src/api/handoff.ts: new handoffApi.translate()
+     plus NoteLanguageMeta type. submitText / submitVoice
+     now accept an optional language meta arg and forward
+     all four fields (JSON for text, multipart Form for voice).
+   - HandoffSubmissionPage:
+       Text tab: language selector (defaults "English (default)").
+         Options: English, French, Spanish, Chinese (Simplified),
+         Tagalog, Arabic, Amharic, Portuguese, Other. When the
+         selection is non-English, the textarea placeholder
+         changes to "Type your note in [Language]..." and the
+         "Generate handoff" button first calls /translate.
+       Voice tab: after Whisper transcription completes, the
+         page automatically calls /translate. If the detected
+         language is 'en' OR confidence < 0.7, no review UI
+         shows and the flow proceeds as before.
+       Translation review UI (replaces the capture card while
+         pendingTranslation is set): a "Detected: [Language]"
+         chip with a globe icon, then two stacked-on-mobile/
+         side-by-side-on-desktop sections: "Your note in
+         [Language]" on a gray background (editable) and
+         "Translated to English" on a white background
+         (read-only until "Edit translation" ghost button
+         enables it). Primary "Looks good, continue" submits
+         via the existing submitMutation, threading
+         original_language/language_name/original_text/
+         translated_text into the request.
+       A "Back to edit raw note" link clears pendingTranslation
+         and returns to the capture form.
+   - On submit, the English text is what becomes raw_text; the
+     pipeline is unchanged because raw_text is always English
+     in the multilingual path.
+
+5. FRONTEND — multilingual source-note display:
+   - components/flags/FlagDetailDrawer.tsx: SourceNoteBlock
+     now shows a globe-icon language chip when the note is
+     non-English, then renders two blocks: "Original note
+     ([Language Name])" on a gray background, and "English
+     translation" on white. Falls back to the previous single
+     gray block for English-only notes.
+   - components/handoff/HandoffSummaryBlock.tsx: gained an
+     optional `sourceNote` prop; when supplied with non-English
+     language metadata, renders the same multilingual block.
+     No current caller passes it — added so consumers can
+     opt-in without further component changes.
+
+6. FRONTEND — cookie consent banner:
+   - components/ui/CookieBanner.tsx (new): fixed bottom-of-
+     screen white banner with a top border and a soft shadow,
+     small slate text, two buttons stacked on mobile / inline
+     on desktop. Slide-up animation 250ms ease-out via a
+     scoped @keyframes block. z-index 40 (above bottom nav,
+     below modals). On mount reads localStorage key
+     "daliyaflow_cookie_consent"; only renders when the value
+     is missing. Accept/Decline both write a value and unmount
+     the banner. localStorage failures are swallowed (banner
+     just won't persist if storage is locked).
+   - App.tsx: mounts <CookieBanner /> alongside ToastViewport
+     so it's present on every route — landing, auth, and
+     authenticated pages alike.
+
+VERIFICATION:
+- python -m py_compile passes on the changed backend files.
+- npm run build succeeds; vite outputs new SignInPage,
+  HandoffSubmissionPage, FlagDetailDrawer, HandoffSummaryBlock
+  chunks.
+- Migration task ran on Fargate via `aws ecs run-task` with
+  command override; exit 0.
+- S3 sync + index.html upload + CloudFront invalidation
+  IB1QFBZEDEK22FCQ3R30904N5E created.
+- Backend image
+  sha256:e7caab6ac4e89ead26eba31afd58a03abf29c5cf9dc569b5dc27b576b2f10cc0
+  pushed to BOTH daliyaflow-backend and daliyaflow-worker
+  ECR repos.
+- ECS force-new-deployment on backend + worker;
+  services-stable waiter exited 0.
+- /health → 200, db ok, redis ok.
+
+FILES TOUCHED:
+  Backend:
+    backend/app/db/migrations/versions/0004_multilingual_notes.py (new)
+    backend/app/models/shift_note.py
+    backend/app/schemas/shift_note.py
+    backend/app/services/ai_pipeline.py
+    backend/app/api/v1/handoffs.py
+    backend/app/api/v1/shifts.py (RawNoteRead exposes
+                                  language fields)
+    backend/app/core/rate_limit.py
+  Frontend:
+    frontend/src/api/handoff.ts
+    frontend/src/api/dashboard.ts (RawNote shape extended)
+    frontend/src/pages/caregiver/HandoffSubmissionPage.tsx
+    frontend/src/components/flags/FlagDetailDrawer.tsx
+    frontend/src/components/handoff/HandoffSummaryBlock.tsx
+    frontend/src/components/ui/CookieBanner.tsx (new)
+    frontend/src/App.tsx
+
+NOTES:
+- The translation step is best-effort. If /translate fails
+  for any reason (network error, AI key missing, JSON
+  validation failure), the caregiver flow falls through:
+    voice tab: silent fallback, treat transcript as English
+    text tab + non-English language: surface the API error
+      message, caregiver can retry or change language to
+      English and submit
+- The 0.7 confidence threshold is intentional — Claude often
+  reports high confidence on English-with-foreign-words text
+  (e.g. brand names, addresses). Low-confidence detections
+  fall back to "treat as English" to avoid false-positive
+  language-confirmation popups for monolingual English users.
+- The pipeline (run_pipeline → generate_handoff_summary)
+  reads `note.raw_text` only. Storing the English translation
+  as raw_text means the existing prompts work unchanged; the
+  original_text column is purely for display.
+- Cookie banner z-index 40 is one below the modal layer (50)
+  and above the mobile bottom nav (30). The mobile bottom
+  nav remains visible above the banner because of the safe-
+  area-inset-bottom padding on the banner — they don't
+  overlap on iOS notched devices.
+- For UI verification: the dev stack isn't running locally
+  (Docker compose is for the dev environment only); the
+  build went straight to prod. Visual verification of the
+  translation review UI, the cookie banner animation, and
+  the source-note multilingual block needs a manual test in
+  the deployed UI. Backend `/health` is the only automated
+  smoke that ran.

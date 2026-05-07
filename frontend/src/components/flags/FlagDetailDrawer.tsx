@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
+  Globe,
   Mic,
   X,
 } from 'lucide-react';
@@ -347,17 +348,33 @@ function SourceNoteBlock({
   expanded,
   onToggle,
 }: {
-  note: { input_type: string; raw_text: string; transcript_confidence: number | null };
+  note: {
+    input_type: string;
+    raw_text: string;
+    transcript_confidence: number | null;
+    original_language?: string | null;
+    language_name?: string | null;
+    original_text?: string | null;
+    translated_text?: string | null;
+  };
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const lines = note.raw_text.split('\n');
-  const isLong = note.raw_text.length > 240 || lines.length > 3;
+  const isMultilingual =
+    !!note.original_language &&
+    note.original_language !== 'en' &&
+    !!note.translated_text;
+
+  const displayText = isMultilingual
+    ? note.translated_text || note.raw_text
+    : note.raw_text;
+  const lines = displayText.split('\n');
+  const isLong = displayText.length > 240 || lines.length > 3;
   const collapsed = isLong && !expanded;
   const visible = collapsed
     ? lines.slice(0, 3).join('\n').slice(0, 280) +
-      (note.raw_text.length > 280 ? '…' : '')
-    : note.raw_text;
+      (displayText.length > 280 ? '…' : '')
+    : displayText;
 
   const lowConfidence =
     note.transcript_confidence !== null &&
@@ -370,6 +387,13 @@ function SourceNoteBlock({
           <Badge variant="neutral" className="!normal-case">
             <span className="inline-flex items-center gap-1">
               <Mic size={10} aria-hidden /> Voice note — transcribed
+            </span>
+          </Badge>
+        )}
+        {isMultilingual && (
+          <Badge variant="neutral" className="!normal-case">
+            <span className="inline-flex items-center gap-1">
+              <Globe size={10} aria-hidden /> {note.language_name}
             </span>
           </Badge>
         )}
@@ -386,12 +410,30 @@ function SourceNoteBlock({
         )}
       </div>
 
-      <div
-        className="rounded-md p-4 text-sm text-ink leading-relaxed whitespace-pre-wrap"
-        style={{ background: 'var(--color-surface)' }}
-      >
-        {visible}
-      </div>
+      {isMultilingual && note.original_text ? (
+        <>
+          <p className="text-xs text-muted-text mt-1">
+            Original note ({note.language_name})
+          </p>
+          <div
+            className="rounded-md p-4 text-sm text-ink leading-relaxed whitespace-pre-wrap"
+            style={{ background: 'var(--color-surface)' }}
+          >
+            {note.original_text}
+          </div>
+          <p className="text-xs text-muted-text mt-2">English translation</p>
+          <div className="rounded-md p-4 text-sm text-ink leading-relaxed whitespace-pre-wrap bg-white border border-border">
+            {visible}
+          </div>
+        </>
+      ) : (
+        <div
+          className="rounded-md p-4 text-sm text-ink leading-relaxed whitespace-pre-wrap"
+          style={{ background: 'var(--color-surface)' }}
+        >
+          {visible}
+        </div>
+      )}
 
       {isLong && (
         <button

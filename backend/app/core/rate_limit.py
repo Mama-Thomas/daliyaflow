@@ -42,6 +42,7 @@ LIMITS = {
     # Whisper transcribe is now a single post-recording call rather than
     # streaming chunks every 3s, so a higher per-user cap is safe.
     "note_transcribe": "30/minute",
+    "note_translate": "20/minute",
     "handoff_finalize": "10/minute",
     "waitlist": "3/hour",
     "waitlist_submit": "3/hour",

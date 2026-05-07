@@ -38,6 +38,12 @@ from app.schemas.shift_note import (
     HandoffStatusResponse,
     NoteSubmitResponse,
     NoteSubmitText,
+    TranslateRequest,
+    TranslateResponse,
+)
+from app.services.ai_pipeline import (
+    AIOutputValidationError,
+    detect_and_translate,
 )
 from app.services.audio_service import (
     ALLOWED_AUDIO_MIME_TYPES,
@@ -77,6 +83,10 @@ async def _persist_and_dispatch_note(
     input_type: str,
     audio_key: str | None,
     request: Request,
+    original_language: str | None = None,
+    language_name: str | None = None,
+    original_text: str | None = None,
+    translated_text: str | None = None,
 ) -> NoteSubmitResponse:
     note = ShiftNoteRaw(
         shift_id=shift.id,
@@ -85,6 +95,10 @@ async def _persist_and_dispatch_note(
         raw_text=text_to_store,
         audio_s3_key=audio_key,
         word_count=len(text_to_store.split()),
+        original_language=original_language or "en",
+        language_name=language_name,
+        original_text=original_text,
+        translated_text=translated_text,
     )
     db.add(note)
     await db.flush()
@@ -143,6 +157,46 @@ async def submit_note_text(
         input_type=payload.input_type,
         audio_key=None,
         request=request,
+        original_language=payload.original_language,
+        language_name=payload.language_name,
+        original_text=payload.original_text,
+        translated_text=payload.translated_text,
+    )
+
+
+@router.post(
+    "/shifts/{shift_id}/notes/translate",
+    response_model=TranslateResponse,
+)
+@limiter.limit(LIMITS["note_translate"])
+async def translate_note(
+    request: Request,
+    response: Response,
+    shift_id: uuid.UUID,
+    payload: TranslateRequest,
+    tenant: TenantContext = Depends(
+        require_roles("caregiver", "coordinator", "supervisor", "admin")
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> TranslateResponse:
+    """Detect language + translate to English. Does NOT persist anything;
+    the caregiver UI uses this as a preview before submitting the note."""
+    # Same per-shift permission check as the submit endpoints.
+    await _shift_for_caregiver(db, shift_id, tenant)
+
+    try:
+        result = await detect_and_translate(payload.text)
+    except AIOutputValidationError as exc:
+        raise ValidationError(
+            "Translation could not be completed.", field="text"
+        ) from exc
+
+    return TranslateResponse(
+        original_text=payload.text,
+        detected_language=result.detected_language,
+        language_name=result.language_name,
+        translated_text=result.translated_text,
+        confidence=result.confidence,
     )
 
 
@@ -213,6 +267,10 @@ async def submit_note_audio(
     shift_id: uuid.UUID,
     audio: UploadFile = File(...),
     raw_text: str | None = Form(default=None),
+    original_language: str | None = Form(default=None),
+    language_name: str | None = Form(default=None),
+    original_text: str | None = Form(default=None),
+    translated_text: str | None = Form(default=None),
     tenant: TenantContext = Depends(
         require_roles("caregiver", "coordinator", "supervisor", "admin")
     ),
@@ -251,6 +309,10 @@ async def submit_note_audio(
         input_type="voice",
         audio_key=audio_key,
         request=request,
+        original_language=original_language,
+        language_name=language_name,
+        original_text=_sanitize_text(original_text) if original_text else None,
+        translated_text=_sanitize_text(translated_text) if translated_text else None,
     )
 
 

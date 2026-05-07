@@ -35,6 +35,10 @@ class RawNoteRead(BaseModel):
     input_type: str
     raw_text: str
     transcript_confidence: float | None = None
+    original_language: str | None = None
+    language_name: str | None = None
+    original_text: str | None = None
+    translated_text: str | None = None
     created_at: datetime
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])

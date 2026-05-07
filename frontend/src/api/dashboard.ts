@@ -61,6 +61,10 @@ export interface RawNote {
   input_type: 'text' | 'voice';
   raw_text: string;
   transcript_confidence: number | null;
+  original_language: string | null;
+  language_name: string | null;
+  original_text: string | null;
+  translated_text: string | null;
   created_at: string;
 }
 

@@ -39,14 +39,37 @@ export interface NoteSubmitResponse {
   message: string;
 }
 
+export interface TranslateResult {
+  original_text: string;
+  detected_language: string;
+  language_name: string;
+  translated_text: string;
+  confidence: number;
+}
+
+export interface NoteLanguageMeta {
+  original_language?: string | null;
+  language_name?: string | null;
+  original_text?: string | null;
+  translated_text?: string | null;
+}
+
 export const handoffApi = {
   submitText: async (
     shiftId: string,
     rawText: string,
+    language?: NoteLanguageMeta,
   ): Promise<NoteSubmitResponse> => {
     const { data } = await apiClient.post<NoteSubmitResponse>(
       `/shifts/${shiftId}/notes`,
-      { input_type: 'text', raw_text: rawText },
+      {
+        input_type: 'text',
+        raw_text: rawText,
+        original_language: language?.original_language ?? undefined,
+        language_name: language?.language_name ?? undefined,
+        original_text: language?.original_text ?? undefined,
+        translated_text: language?.translated_text ?? undefined,
+      },
     );
     return data;
   },
@@ -55,10 +78,19 @@ export const handoffApi = {
     shiftId: string,
     audio: Blob,
     transcript: string,
+    language?: NoteLanguageMeta,
   ): Promise<NoteSubmitResponse> => {
     const fd = new FormData();
     fd.append('audio', audio, 'shift-note.webm');
     if (transcript) fd.append('raw_text', transcript);
+    if (language?.original_language) {
+      fd.append('original_language', language.original_language);
+    }
+    if (language?.language_name) fd.append('language_name', language.language_name);
+    if (language?.original_text) fd.append('original_text', language.original_text);
+    if (language?.translated_text) {
+      fd.append('translated_text', language.translated_text);
+    }
     // NOTE: do not set Content-Type manually — axios + FormData need to
     // generate the multipart boundary themselves, and any custom header
     // also wipes the request-interceptor-added Authorization on some
@@ -67,6 +99,18 @@ export const handoffApi = {
     const { data } = await apiClient.post<NoteSubmitResponse>(
       `/shifts/${shiftId}/notes/audio`,
       fd,
+    );
+    return data;
+  },
+
+  translate: async (
+    shiftId: string,
+    text: string,
+    sourceLanguage?: string,
+  ): Promise<TranslateResult> => {
+    const { data } = await apiClient.post<TranslateResult>(
+      `/shifts/${shiftId}/notes/translate`,
+      { text, source_language: sourceLanguage ?? undefined },
     );
     return data;
   },

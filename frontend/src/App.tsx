@@ -12,6 +12,7 @@ import { MobileLayout } from '@/components/caregiver/MobileLayout';
 import { CoordinatorLayout } from '@/components/coordinator/CoordinatorLayout';
 import { ToastViewport } from '@/components/ui/Toast';
 import { SkeletonCard } from '@/components/ui/Skeleton';
+import { CookieBanner } from '@/components/ui/CookieBanner';
 import { SessionTimeoutGuard } from '@/hooks/useSessionTimeout';
 
 const SignInPage = lazy(() => import('@/pages/auth/SignInPage'));
@@ -86,6 +87,7 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <ToastViewport />
+        <CookieBanner />
         <SessionTimeoutGuard />
         <Suspense fallback={<PageFallback />}>
           <Routes>

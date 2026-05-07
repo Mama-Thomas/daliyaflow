@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ChevronLeft,
   FileText,
+  Globe,
   Loader2,
   Mic,
   Pencil,
@@ -24,7 +25,14 @@ import { RiskFlagCard } from '@/components/flags/RiskFlagCard';
 import { VoiceNoteRecorder } from '@/components/handoff/VoiceNoteRecorder';
 import { StepIndicator } from '@/components/handoff/StepIndicator';
 import { ManualFlagForm } from '@/components/flags/ManualFlagForm';
-import { handoffApi, flagsApi, HandoffStatus, SuggestedFlag } from '@/api/handoff';
+import {
+  handoffApi,
+  flagsApi,
+  HandoffStatus,
+  NoteLanguageMeta,
+  SuggestedFlag,
+  TranslateResult,
+} from '@/api/handoff';
 import { shiftsApi } from '@/api/shifts';
 import { clientsApi } from '@/api/clients';
 import { formatCategory, fullDate } from '@/utils/format';
@@ -39,6 +47,24 @@ const PLACEHOLDER =
   'Any concerns to flag?';
 
 type Step = 1 | 2 | 3 | 'done';
+
+const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
+  { code: 'en', label: 'English (default)' },
+  { code: 'fr', label: 'French' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'zh', label: 'Chinese (Simplified)' },
+  { code: 'tl', label: 'Tagalog' },
+  { code: 'ar', label: 'Arabic' },
+  { code: 'am', label: 'Amharic' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'other', label: 'Other' },
+];
+
+function languageLabelFor(code: string): string {
+  return LANGUAGE_OPTIONS.find((o) => o.code === code)?.label ?? code;
+}
+
+const TRANSLATE_CONFIDENCE_THRESHOLD = 0.7;
 
 const PROGRESS_MESSAGES = [
   { atSec: 0, text: 'Analyzing your notes...' },
@@ -134,6 +160,12 @@ export default function HandoffSubmissionPage() {
   const [direction, setDirection] = useState<'forward' | 'back'>('forward');
   const [showNudge, setShowNudge] = useState(false);
   const [nudgeIssues, setNudgeIssues] = useState<NoteQualityIssue[]>([]);
+  const [textLanguage, setTextLanguage] = useState<string>('en');
+  const [pendingTranslation, setPendingTranslation] =
+    useState<TranslateResult | null>(null);
+  const [originalDraft, setOriginalDraft] = useState<string>('');
+  const [englishDraft, setEnglishDraft] = useState<string>('');
+  const [englishEditable, setEnglishEditable] = useState(false);
 
   function goToStep(next: Step) {
     const numericNext = next === 'done' ? 4 : next;
@@ -168,13 +200,38 @@ export default function HandoffSubmissionPage() {
     return () => window.clearInterval(id);
   }, [text, step, mode, shiftId]);
 
+  const translateMutation = useMutation({
+    mutationFn: (vars: { text: string; sourceLang?: string }) =>
+      handoffApi.translate(shiftId, vars.text, vars.sourceLang),
+  });
+
+  function handleTranslationResult(
+    result: TranslateResult,
+    context: 'text' | 'voice',
+  ) {
+    const isEnglish = result.detected_language === 'en';
+    const lowConfidence = result.confidence < TRANSLATE_CONFIDENCE_THRESHOLD;
+    if (isEnglish || lowConfidence) {
+      // Skip the review step — proceed as English. The note text is what
+      // it already is (transcript or text input).
+      setPendingTranslation(null);
+      void context;
+      return;
+    }
+    setPendingTranslation(result);
+    setOriginalDraft(result.original_text);
+    setEnglishDraft(result.translated_text);
+    setEnglishEditable(false);
+    void context;
+  }
+
   const transcribeMutation = useMutation({
     mutationFn: (blob: Blob) => handoffApi.transcribeVoice(shiftId, blob),
     onMutate: () => {
       setTranscriptStatus('transcribing');
       setTranscriptMessage('');
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       if (!data.available || (data.transcript ?? '').trim().length === 0) {
         setTranscriptStatus('unavailable');
         setTranscriptMessage(
@@ -190,6 +247,16 @@ export default function HandoffSubmissionPage() {
           .join(' — continued — ');
         setTranscriptDraft(combined);
         setTranscriptHistory((h) => [...h, data.transcript]);
+        // Auto-detect language. If non-English with confidence, the
+        // translation review UI will swap in.
+        try {
+          const result = await translateMutation.mutateAsync({
+            text: combined,
+          });
+          handleTranslationResult(result, 'voice');
+        } catch {
+          // Translation is best-effort — silently treat as English.
+        }
       }
     },
     onError: () => {
@@ -209,14 +276,33 @@ export default function HandoffSubmissionPage() {
 
   const submitMutation = useMutation({
     mutationFn: async () => {
+      // Translation flow: if a translation has been confirmed, store English
+      // as raw_text (so the AI pipeline reads it natively) plus the
+      // language metadata for source-note display.
+      let langMeta: NoteLanguageMeta | undefined;
+      let englishText = text;
+      let voiceTranscript = transcriptDraft || text;
+      if (pendingTranslation && englishDraft) {
+        langMeta = {
+          original_language: pendingTranslation.detected_language,
+          language_name: pendingTranslation.language_name,
+          original_text: originalDraft,
+          translated_text: englishDraft,
+        };
+        englishText = englishDraft;
+        voiceTranscript = englishDraft;
+      } else if (mode === 'text' && textLanguage === 'en') {
+        langMeta = { original_language: 'en' };
+      }
       if (mode === 'voice' && audio) {
         return handoffApi.submitVoice(
           shiftId,
           audio,
-          transcriptDraft || text,
+          voiceTranscript,
+          langMeta,
         );
       }
-      return handoffApi.submitText(shiftId, text);
+      return handoffApi.submitText(shiftId, englishText, langMeta);
     },
     onSuccess: () => {
       goToStep(2);
@@ -373,7 +459,84 @@ export default function HandoffSubmissionPage() {
             className="space-y-5"
           >
 
-        {step === 1 && (
+        {step === 1 && pendingTranslation && (
+          <Card>
+            <div className="mb-4 flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium text-forest bg-forest-pale">
+                <Globe size={12} aria-hidden /> Detected:{' '}
+                {pendingTranslation.language_name}
+              </span>
+            </div>
+            <h1 className="font-display text-2xl text-ink mb-1">
+              Confirm your translation
+            </h1>
+            <p className="text-sm text-slate mb-5">
+              We translated your note to English so the next caregiver and
+              your coordinator can read it. Edit either side if anything
+              needs fixing.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="rounded-md p-3 bg-surface border border-border">
+                <h3 className="text-xs font-semibold text-slate mb-2 uppercase tracking-wide">
+                  Your note in {pendingTranslation.language_name}
+                </h3>
+                <Textarea
+                  rows={8}
+                  value={originalDraft}
+                  onChange={(e) => setOriginalDraft(e.target.value)}
+                />
+              </div>
+              <div className="rounded-md p-3 bg-white border border-border">
+                <h3 className="text-xs font-semibold text-slate mb-2 uppercase tracking-wide">
+                  Translated to English
+                </h3>
+                <Textarea
+                  rows={8}
+                  value={englishDraft}
+                  onChange={(e) => setEnglishDraft(e.target.value)}
+                  disabled={!englishEditable}
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-col sm:flex-row gap-3">
+              <Button
+                size="lg"
+                fullWidth
+                loading={submitMutation.isPending}
+                onClick={() => {
+                  setError(null);
+                  submitMutation.mutate();
+                }}
+              >
+                Looks good, continue
+              </Button>
+              <Button
+                variant="ghost"
+                size="lg"
+                onClick={() => setEnglishEditable(true)}
+                disabled={englishEditable}
+              >
+                {englishEditable ? 'Editing translation' : 'Edit translation'}
+              </Button>
+            </div>
+            <div className="mt-3 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingTranslation(null);
+                  setEnglishEditable(false);
+                }}
+                className="text-xs text-slate hover:text-forest"
+              >
+                Back to edit raw note
+              </button>
+            </div>
+          </Card>
+        )}
+
+        {step === 1 && !pendingTranslation && (
           <Card>
             <h1 className="font-display text-2xl text-ink mb-1">
               Capture your shift note
@@ -409,12 +572,36 @@ export default function HandoffSubmissionPage() {
 
             {mode === 'text' ? (
               <>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <label
+                    htmlFor="note-language"
+                    className="inline-flex items-center gap-1.5 text-xs text-slate"
+                  >
+                    <Globe size={14} className="text-forest" /> Language
+                  </label>
+                  <select
+                    id="note-language"
+                    value={textLanguage}
+                    onChange={(e) => setTextLanguage(e.target.value)}
+                    className="text-sm rounded-md border border-border bg-white px-2 py-1.5 text-ink focus:outline-none focus:border-forest"
+                  >
+                    {LANGUAGE_OPTIONS.map((o) => (
+                      <option key={o.code} value={o.code}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <Textarea
                   label="Shift notes"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   rows={9}
-                  placeholder={PLACEHOLDER}
+                  placeholder={
+                    textLanguage === 'en' || textLanguage === 'other'
+                      ? PLACEHOLDER
+                      : `Type your note in ${languageLabelFor(textLanguage)}...`
+                  }
                 />
                 <div className="flex items-center justify-between text-xs mt-2">
                   <span className="text-muted-text">
@@ -567,7 +754,9 @@ export default function HandoffSubmissionPage() {
               <Button
                 fullWidth
                 size="lg"
-                loading={submitMutation.isPending}
+                loading={
+                  submitMutation.isPending || translateMutation.isPending
+                }
                 disabled={
                   mode === 'text'
                     ? charCount < 50
@@ -577,11 +766,36 @@ export default function HandoffSubmissionPage() {
                       // path is allowed).
                       !audio ||
                       transcriptStatus === 'transcribing' ||
-                      transcriptStatus === 'idle'
+                      transcriptStatus === 'idle' ||
+                      translateMutation.isPending
                 }
-                onClick={() => {
+                onClick={async () => {
                   setError(null);
                   if (mode === 'text') {
+                    if (textLanguage !== 'en') {
+                      // Non-English text path: translate first, then either
+                      // show review (non-English detected) or submit
+                      // directly (English detected / low confidence).
+                      try {
+                        const result = await translateMutation.mutateAsync({
+                          text,
+                          sourceLang:
+                            textLanguage === 'other' ? undefined : textLanguage,
+                        });
+                        if (
+                          result.detected_language === 'en' ||
+                          result.confidence < TRANSLATE_CONFIDENCE_THRESHOLD
+                        ) {
+                          submitMutation.mutate();
+                          return;
+                        }
+                        handleTranslationResult(result, 'text');
+                        return;
+                      } catch (err) {
+                        setError(getApiErrorMessage(err));
+                        return;
+                      }
+                    }
                     const issues = checkNoteQuality(text);
                     if (issues.length > 0 && !showNudge) {
                       setNudgeIssues(issues);
@@ -592,7 +806,11 @@ export default function HandoffSubmissionPage() {
                   submitMutation.mutate();
                 }}
               >
-                {submitMutation.isPending ? 'Generating...' : 'Generate handoff'}
+                {submitMutation.isPending
+                  ? 'Generating...'
+                  : translateMutation.isPending
+                    ? 'Translating...'
+                    : 'Generate handoff'}
               </Button>
             </div>
           </Card>

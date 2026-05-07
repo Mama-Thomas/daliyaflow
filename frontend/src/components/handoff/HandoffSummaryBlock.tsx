@@ -5,6 +5,7 @@ import {
   AlertCircle,
   ArrowRightCircle,
   FileText,
+  Globe,
   Pencil,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
@@ -20,11 +21,20 @@ export interface HandoffSummary {
   supervisor_attention_reason?: string;
 }
 
+export interface SourceNoteForDisplay {
+  raw_text: string;
+  original_language?: string | null;
+  language_name?: string | null;
+  original_text?: string | null;
+  translated_text?: string | null;
+}
+
 export interface HandoffSummaryBlockProps {
   summary: HandoffSummary;
   generated?: boolean;
   onEdit?: () => void;
   onViewSourceNote?: () => void;
+  sourceNote?: SourceNoteForDisplay;
   className?: string;
 }
 
@@ -64,8 +74,13 @@ export function HandoffSummaryBlock({
   generated,
   onEdit,
   onViewSourceNote,
+  sourceNote,
   className,
 }: HandoffSummaryBlockProps) {
+  const isMultilingual =
+    !!sourceNote?.original_language &&
+    sourceNote.original_language !== 'en' &&
+    !!sourceNote.translated_text;
   return (
     <div
       className={cn(
@@ -129,6 +144,29 @@ export function HandoffSummaryBlock({
           </span>
         </Section>
       )}
+
+      {sourceNote && isMultilingual && sourceNote.original_text ? (
+        <div className="pt-4 border-t border-border space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-forest bg-forest-pale">
+              <Globe size={10} aria-hidden /> {sourceNote.language_name}
+            </span>
+          </div>
+          <p className="text-xs text-muted-text">
+            Original note ({sourceNote.language_name})
+          </p>
+          <div
+            className="rounded-md p-3 text-sm text-ink leading-relaxed whitespace-pre-wrap"
+            style={{ background: 'var(--color-surface)' }}
+          >
+            {sourceNote.original_text}
+          </div>
+          <p className="text-xs text-muted-text">English translation</p>
+          <div className="rounded-md p-3 text-sm text-ink leading-relaxed whitespace-pre-wrap bg-white border border-border">
+            {sourceNote.translated_text}
+          </div>
+        </div>
+      ) : null}
 
       {onViewSourceNote && (
         <div className="pt-2 border-t border-border">
