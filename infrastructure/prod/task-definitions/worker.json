@@ -1,0 +1,43 @@
+{
+  "family": "daliyaflow-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::047557961735:role/daliyaflow-ecs-task-execution-role",
+  "taskRoleArn": "arn:aws:iam::047557961735:role/daliyaflow-ecs-task-role",
+  "containerDefinitions": [{
+    "name": "worker",
+    "image": "047557961735.dkr.ecr.us-west-2.amazonaws.com/daliyaflow-worker:latest",
+    "essential": true,
+    "environment": [
+      {"name": "ENVIRONMENT", "value": "production"},
+      {"name": "AWS_REGION", "value": "us-west-2"},
+      {"name": "AUDIO_BUCKET", "value": "daliyaflow-audio-prod"},
+      {"name": "EMAIL_PROVIDER", "value": "ses"},
+      {"name": "EMAIL_FROM_ADDRESS", "value": "noreply@daliyaflow.com"},
+      {"name": "APP_BASE_URL", "value": "https://daliyaflow.com"}
+    ],
+    "secrets": [
+      {"name": "DATABASE_URL",       "valueFrom": "arn:aws:secretsmanager:us-west-2:047557961735:secret:daliyaflow/prod/database-url-u49uxL"},
+      {"name": "REDIS_URL",          "valueFrom": "arn:aws:secretsmanager:us-west-2:047557961735:secret:daliyaflow/prod/redis-url-3aUEa1"},
+      {"name": "JWT_SECRET_KEY",     "valueFrom": "arn:aws:secretsmanager:us-west-2:047557961735:secret:daliyaflow/prod/jwt-secret-Xvd5xr"},
+      {"name": "JWT_REFRESH_SECRET", "valueFrom": "arn:aws:secretsmanager:us-west-2:047557961735:secret:daliyaflow/prod/jwt-refresh-secret-V13eaE"},
+      {"name": "ANTHROPIC_API_KEY",  "valueFrom": "arn:aws:secretsmanager:us-west-2:047557961735:secret:daliyaflow/prod/anthropic-api-key-dBWHgI"},
+      {"name": "OPENAI_API_KEY",     "valueFrom": "arn:aws:secretsmanager:us-west-2:047557961735:secret:daliyaflow/prod/openai-api-key-byEcya"}
+    ],
+    "command": [
+      "celery", "-A", "app.workers.tasks", "worker",
+      "--concurrency=2",
+      "--loglevel=warning"
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/ecs/daliyaflow-worker",
+        "awslogs-region": "us-west-2",
+        "awslogs-stream-prefix": "worker"
+      }
+    }
+  }]
+}

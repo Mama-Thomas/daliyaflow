@@ -1,0 +1,48 @@
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    color: var(--color-ink);
+  }
+
+  ::selection {
+    background: var(--color-forest-pale);
+    color: var(--color-forest);
+  }
+
+  /* Remove default focus ring; we apply our own ring per-component. */
+  *:focus { outline: none; }
+  *:focus-visible { outline: 2px solid var(--color-forest); outline-offset: 2px; }
+}
+
+@layer utilities {
+  .skeleton-shimmer {
+    background-image: linear-gradient(
+      90deg,
+      var(--color-border) 0%,
+      rgba(255, 255, 255, 0.6) 50%,
+      var(--color-border) 100%
+    );
+    background-size: 1000px 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+}

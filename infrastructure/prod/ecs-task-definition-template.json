@@ -1,0 +1,101 @@
+{
+  "family": "daliyaflow-api",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/daliyaflow-ecs-task-execution",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/daliyaflow-ecs-task",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/daliyaflow-backend:IMAGE_TAG",
+      "essential": true,
+      "cpu": 512,
+      "memory": 1024,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "ENVIRONMENT", "value": "production"},
+        {"name": "EMAIL_PROVIDER", "value": "ses"},
+        {"name": "SEND_EMAILS", "value": "true"},
+        {"name": "AWS_REGION", "value": "REGION"}
+      ],
+      "secrets": [
+        {"name": "DATABASE_URL",        "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/DATABASE_URL"},
+        {"name": "REDIS_URL",           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/REDIS_URL"},
+        {"name": "JWT_SECRET_KEY",      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/JWT_SECRET_KEY"},
+        {"name": "JWT_REFRESH_SECRET",  "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/JWT_REFRESH_SECRET"},
+        {"name": "ANTHROPIC_API_KEY",   "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/ANTHROPIC_API_KEY"},
+        {"name": "OPENAI_API_KEY",      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/OPENAI_API_KEY"},
+        {"name": "SENTRY_DSN",          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/SENTRY_DSN"},
+        {"name": "AUDIO_BUCKET",        "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/AUDIO_BUCKET"},
+        {"name": "EMAIL_FROM_ADDRESS",  "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/EMAIL_FROM_ADDRESS"},
+        {"name": "APP_BASE_URL",        "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/APP_BASE_URL"},
+        {"name": "CORS_ORIGINS",        "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/CORS_ORIGINS"}
+      ],
+      "command": [
+        "gunicorn",
+        "app.main:app",
+        "--workers", "4",
+        "--worker-class", "uvicorn.workers.UvicornWorker",
+        "--bind", "0.0.0.0:8000",
+        "--access-logfile", "-",
+        "--error-logfile", "-"
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/daliyaflow-backend",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "backend"
+        }
+      }
+    },
+    {
+      "name": "worker",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/daliyaflow-backend:IMAGE_TAG",
+      "essential": true,
+      "cpu": 256,
+      "memory": 512,
+      "environment": [
+        {"name": "ENVIRONMENT", "value": "production"},
+        {"name": "AWS_REGION", "value": "REGION"}
+      ],
+      "secrets": [
+        {"name": "DATABASE_URL",        "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/DATABASE_URL"},
+        {"name": "REDIS_URL",           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/REDIS_URL"},
+        {"name": "ANTHROPIC_API_KEY",   "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/ANTHROPIC_API_KEY"},
+        {"name": "OPENAI_API_KEY",      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/OPENAI_API_KEY"},
+        {"name": "SENTRY_DSN",          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/SENTRY_DSN"},
+        {"name": "AUDIO_BUCKET",        "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:daliyaflow/AUDIO_BUCKET"}
+      ],
+      "command": [
+        "celery",
+        "-A", "app.workers.tasks", "worker",
+        "--concurrency=4",
+        "--loglevel=warning"
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/daliyaflow-worker",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "worker"
+        }
+      }
+    }
+  ]
+}

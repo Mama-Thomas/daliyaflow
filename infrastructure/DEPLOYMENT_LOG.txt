@@ -1,0 +1,170 @@
+DALIYAFLOW PRODUCTION DEPLOYMENT
+================================
+Date: 2026-05-04
+Region: us-west-2 (CloudFront cert in us-east-1)
+Account: 047557961735
+IAM user: geriassist-cli
+
+VPC: vpc-03911230ac17ba6a4 (default, 172.31.0.0/16)
+Subnets used (multi-AZ for RDS/ElastiCache):
+  us-west-2a: subnet-0c33f9eab96700440 (172.31.32.0/20, public)
+  us-west-2b: subnet-087c2e0c8a2d2d543 (172.31.16.0/20, public)
+Additional subnets available:
+  us-west-2c: subnet-0923cdde013b33557
+  us-west-2d: subnet-03eff2b717138e3ee
+
+PLAN DEVIATIONS APPLIED:
+  - Postgres 15.4 -> 15.17 (15.4 not selectable on RDS)
+  - ACM cert split into 2: us-east-1 for CloudFront (root + www),
+    us-west-2 for ALB (api.daliyaflow.com)
+  - ECS backend service uses enableExecuteCommand=true so migrations
+    can run via aws ecs execute-command
+  - Alembic env.py will be checked for sync-driver handling; if it
+    uses asyncpg directly, migrations may need a one-off task instead
+
+----- RESOURCES CREATED -----
+
+ECR repositories:
+  - 047557961735.dkr.ecr.us-west-2.amazonaws.com/daliyaflow-backend
+  - 047557961735.dkr.ecr.us-west-2.amazonaws.com/daliyaflow-frontend
+  - 047557961735.dkr.ecr.us-west-2.amazonaws.com/daliyaflow-worker
+
+Security Groups (vpc-03911230ac17ba6a4):
+  - daliyaflow-alb-sg:   sg-0d17672d07647bcd6 (HTTP/HTTPS from 0.0.0.0/0)
+  - daliyaflow-ecs-sg:   sg-0591434d7ca21e668 (8000 from ALB SG)
+  - daliyaflow-rds-sg:   sg-0b1ad9d40ed6103c0 (5432 from ECS SG)
+  - daliyaflow-redis-sg: sg-03827a1f686446155 (6379 from ECS SG)
+
+RDS:
+  - Identifier:   daliyaflow-db
+  - Engine:       postgres 15.17, db.t3.micro, gp3 20GB
+  - Backup:       1 day (free-tier limit; plan said 7)
+  - Subnet group: daliyaflow-db-subnet-group (us-west-2a, us-west-2b)
+  - SG:           sg-0b1ad9d40ed6103c0
+  - Master user:  daliyaflow
+  - Endpoint:     daliyaflow-db.c1quca6scgoi.us-west-2.rds.amazonaws.com:5432
+  - DB name:      daliyaflow
+
+ElastiCache:
+  - Cluster ID:   daliyaflow-redis
+  - Engine:       redis 7.0, cache.t3.micro, 1 node
+  - Subnet group: daliyaflow-redis-subnet
+  - SG:           sg-03827a1f686446155
+  - Endpoint:     daliyaflow-redis.ngfoz8.0001.usw2.cache.amazonaws.com:6379
+
+S3:
+  - Audio bucket:  daliyaflow-audio-prod (private, versioned, 90d lifecycle on agencies/)
+  - Frontend bucket: <created in Step 16>
+
+CloudWatch Log Groups (30-day retention):
+  - /ecs/daliyaflow-backend
+  - /ecs/daliyaflow-worker
+  - /ecs/daliyaflow-beat
+
+IAM Roles:
+  - daliyaflow-ecs-task-execution-role
+      arn:aws:iam::047557961735:role/daliyaflow-ecs-task-execution-role
+      Policies: AmazonECSTaskExecutionRolePolicy + inline daliyaflow-secrets-read
+  - daliyaflow-ecs-task-role
+      arn:aws:iam::047557961735:role/daliyaflow-ecs-task-role
+      Inline policy daliyaflow-app-policy: S3 (audio bucket), SES, Secrets Manager (daliyaflow/prod/*),
+      Transcribe, CloudWatch Logs, SSM (for ECS execute-command)
+
+ACM Certificates:
+  - CloudFront cert (us-east-1):
+      arn:aws:acm:us-east-1:047557961735:certificate/161d8048-5289-4d36-96e9-e95dd238e223
+      SANs: daliyaflow.com, *.daliyaflow.com
+      Status: PENDING_VALIDATION
+  - ALB cert (us-west-2):
+      arn:aws:acm:us-west-2:047557961735:certificate/8dd66c99-2e25-4b27-99fc-0dd81d662fc7
+      SANs: api.daliyaflow.com
+      Status: PENDING_VALIDATION
+
+Secrets Manager (us-west-2):
+  - daliyaflow/prod/jwt-secret
+  - daliyaflow/prod/jwt-refresh-secret
+  - daliyaflow/prod/db-password
+  - daliyaflow/prod/anthropic-api-key
+  - daliyaflow/prod/openai-api-key
+  - daliyaflow/prod/ses-from-email
+  - daliyaflow/prod/redis-url        (redis://...:6379/0)
+  - daliyaflow/prod/database-url      (postgresql+asyncpg://...)
+  - daliyaflow/prod/database-url-sync (postgresql+psycopg2://... — for alembic if needed)
+  (alembic env.py uses async driver, so database-url-sync is not currently used)
+
+ECS:
+  - Cluster:    daliyaflow-prod (arn:aws:ecs:us-west-2:047557961735:cluster/daliyaflow-prod)
+  - Task defs:  daliyaflow-backend:1, daliyaflow-worker:1, daliyaflow-beat:1
+  - Services:   daliyaflow-backend (1/1, ALB-fronted, exec-command enabled)
+                daliyaflow-worker  (1/1)
+                daliyaflow-beat    (1/1)
+  - Migrations: alembic upgrade head -> 0001_initial -> 0002_waitlist -> 0003_sprint9 (exit 0)
+
+ALB:
+  - Name:       daliyaflow-alb
+  - ARN:        arn:aws:elasticloadbalancing:us-west-2:047557961735:loadbalancer/app/daliyaflow-alb/439ade86d441e45d
+  - DNS:        daliyaflow-alb-743926577.us-west-2.elb.amazonaws.com
+  - Listeners:  HTTP:80 -> 301 HTTPS, HTTPS:443 -> backend TG (forwarded with ALB cert)
+  - Target group: daliyaflow-backend-tg (1 target healthy on 172.31.44.192:8000)
+
+S3:
+  - Audio bucket:    daliyaflow-audio-prod (private, versioned, 90d lifecycle on agencies/)
+  - Frontend bucket: daliyaflow-frontend-prod (private, OAC-locked to CloudFront only)
+
+CloudFront:
+  - Distribution ID:  EP1DRSCYBS5Y2
+  - Distribution ARN: arn:aws:cloudfront::047557961735:distribution/EP1DRSCYBS5Y2
+  - Domain:           d27uytvwf2lpfn.cloudfront.net
+  - Aliases:          daliyaflow.com, www.daliyaflow.com
+  - Cert:             us-east-1 ACM cert (issued)
+  - OAC:              E1VF550V8YB8A6 (S3-only, sigv4)
+  - Status:           Deployed
+
+SES (us-west-2):
+  - Domain identity:  daliyaflow.com (PendingVerification — TXT not yet added)
+  - DKIM tokens:      6lqmsqmaoehpnhkfkh4vvs5eibys4bh2,
+                      yruitqdbaggrntljlorevka7h6gw6cgv,
+                      edsvxhfqv7puaasr23bil5tbzqyeocrr
+  - Sandbox status:   default (account starts in SES sandbox; request production
+                      access for sending to non-verified recipients)
+
+----- SMOKE TESTS (2026-05-04) -----
+  - https://api.daliyaflow.com/health
+      -> {"status":"ok","service":"daliyaflow-api","environment":"production",
+          "version":"0.1.0","db":"ok","redis":"ok"}
+  - https://daliyaflow.com               -> HTTP/2 200 (SPA index.html via CloudFront -> S3)
+  - https://www.daliyaflow.com           -> HTTP/2 200
+  - http://daliyaflow.com                -> 301 -> https://daliyaflow.com/
+  - https://daliyaflow.com/assets/<hash>.js
+      -> HTTP/2 200, cache-control: max-age=31536000,public, x-cache: Miss from cloudfront
+
+----- LIVE URLS -----
+  Frontend: https://daliyaflow.com  (also www.)
+  API:      https://api.daliyaflow.com  (CORS open to daliyaflow.com / www.)
+  Health:   https://api.daliyaflow.com/health
+
+----- ESTIMATED MONTHLY COST -----
+  RDS db.t3.micro (Postgres 15.17, 20GB gp3, 1d backup): ~$15
+  ElastiCache cache.t3.micro Redis:                       ~$12
+  ECS Fargate (backend 0.5vCPU/1GB + worker 0.25/0.5 + beat 0.25/0.5, 24x7): ~$20
+  ALB (always-on + LCU):                                  ~$18-22
+  CloudFront PriceClass_100 + S3 + ECR:                   ~$1-3 at low traffic
+  Secrets Manager (~10 secrets x $0.40):                  ~$4
+  Route53/Cloudflare DNS:                                 $0 (Cloudflare)
+  Subtotal:                                              ~$70-75/mo
+  (Was estimated $50-70 in plan; actual closer to $70 with ALB on always.)
+
+----- POST-DEPLOY: SEED -----
+  Ran scripts/seed_dev.py as one-off Fargate task (exit 0).
+  Agency: Sunrise Home Care (sunrise-home-care)  id=3d565e70-1e1d-4c96-ac62-9c0091a90fb0
+  Created: 6 users, 5 clients, 11 shifts, 6 handoff pipelines run.
+  Seed accounts (all password: DevPassword123! — ROTATE BEFORE EXPOSING):
+    admin@sunrisecare.com         (admin)
+    coordinator@sunrisecare.com   (coordinator)
+    supervisor@sunrisecare.com    (supervisor)
+    caregiver1@sunrisecare.com    (Maria Lopez)
+    caregiver2@sunrisecare.com    (James Patel)
+    caregiver3@sunrisecare.com    (Aisha Johnson)
+  Verified login: POST https://api.daliyaflow.com/api/v1/auth/login -> 200, access_token issued.
+
+  Local copy of generated values: infrastructure/.secrets/secrets.env (gitignored, chmod 600)

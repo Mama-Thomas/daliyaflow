@@ -1,0 +1,19 @@
+# Production overlay placeholder. In real production we deploy to ECS Fargate
+# (per SKILL.md section 10), so this file is reserved for prod-parity local
+# smoke tests with no bind mounts and the built static frontend.
+version: '3.9'
+
+services:
+  backend:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    environment:
+      ENVIRONMENT: production
+    volumes: []
+
+  worker:
+    command: celery -A app.workers.tasks worker --loglevel=warning --concurrency=4
+    volumes: []
+
+  frontend:
+    command: ["sh", "-c", "npm run build && npm run preview -- --host 0.0.0.0 --port 3000"]
+    volumes: []
