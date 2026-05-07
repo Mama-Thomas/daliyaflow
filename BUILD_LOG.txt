@@ -3538,3 +3538,197 @@ NOTES:
   won't appear in their warm set. Acceptable for now: the
   caregiver-side CareCard UI is not heavily used, and the
   cache will be populated on first manual click anyway.
+
+POST-DEPLOY DEBUGGING (same day, before the deploy was signed
+off):
+
+A. Async/Celery loop bug — first observed live:
+   - First production login after the prewarm deploy threw:
+       RuntimeError: Task <Task pending ... _run_prewarm_carecards
+       running at /app/app/workers/tasks.py:214> got Future
+       <Future pending cb=[BaseProtocol._on_waiter_completed()]>
+       attached to a different loop
+     during db.execute() inside the prewarm task. Same flavour
+     of error then repeated on the next attempt at the
+     `engine.dispose()` path, this time during pool teardown
+     (RuntimeError: Event loop is closed).
+   - Root cause: the global async engine in app.db.session
+     uses an AsyncAdaptedQueuePool that caches asyncpg
+     connections. Each Celery task runs in a *fresh*
+     asyncio.run() loop. The second task in a long-lived
+     prefork worker process inherits asyncpg connections
+     bound to the *previous* (now-closed) loop; pool_pre_ping
+     awaits on Futures attached to that dead loop and dies.
+     Disposing the global pool from the new loop has the
+     same problem because the cached connections need their
+     original loop to clean up.
+   - process_shift_note (the existing async-from-Celery task)
+     has the latent same bug, but in practice rarely manifests
+     because shift-note traffic is sparse and a worker
+     typically processes one before being recycled. Login
+     traffic is dense, so prewarm hit it on every other call.
+   - Fix: per-task ephemeral engine with NullPool, scoped
+     inside _run_prewarm_carecards and disposed in a finally
+     block. Nothing is cached, nothing crosses loop
+     boundaries, and the global pool used by FastAPI is
+     untouched. Inner loop refactored into _prewarm_loop
+     helper that takes the SessionFactory from the caller.
+   - Followup worth doing in a separate change: apply the
+     same NullPool-per-task pattern to process_shift_note and
+     send_morning_digests so the latent bug is closed
+     everywhere. Not done in this round to keep the diff
+     surgical.
+
+B. Worker logging level — second source of confusion:
+   - Worker is launched with `celery worker ... --loglevel=warning`
+     (in the daliyaflow-worker ECS task definition). My initial
+     completion log used logger.info, which is filtered out at
+     this level — so a successful prewarm produced ZERO
+     visible output, indistinguishable from "task didn't run."
+   - Bumped the completion log from logger.info to
+     logger.warning with a comment explaining why. Failure
+     paths (ERROR) and BaseTask.on_failure (ERROR) were
+     already visible.
+   - Cleanest long-term fix would be to call setup_logging()
+     from the worker entrypoint so the root logger is at INFO
+     and the worker formatter is the same JSON formatter
+     FastAPI uses. Not done this round; the WARNING bump is
+     enough for operational confirmation.
+
+VERIFICATION (final attempt, after the two fixes above):
+- Worker log at 2026-05-07 08:00:27 UTC:
+    "Pre-warmed 3 carecards for user 93d82b17-cec1-48a7-a456-
+    09c0248424d5 role coordinator (skipped=2 failed=0 total=5)"
+  Login was at 07:59:55, prewarm completed in ~32s — 3 fresh
+  Claude generations + 0.5s inter-client sleeps + 2 skips for
+  cache entries already <1h old.
+- Backend log at 08:00:32 UTC:
+    GET /api/v1/clients/6c3407cc.../continuity-briefing
+    → 200 in 14ms
+- Backend log at 08:00:39 UTC:
+    GET /api/v1/clients/a7e31b5f.../continuity-briefing
+    → 200 in 11ms
+  Cold-path latency for this endpoint is ~12000ms (Claude
+  call). 11–14ms is unmistakable cache hit on both clicks.
+- /health remained 200 throughout.
+
+ADDITIONAL FILES TOUCHED (post-deploy fix round):
+  Backend:
+    backend/app/workers/tasks.py
+      — _run_prewarm_carecards now creates a per-task
+        NullPool engine + sessionmaker, hands the
+        SessionFactory to a new helper _prewarm_loop, and
+        disposes the local engine in a finally block.
+      — Removed the earlier (insufficient) fix that called
+        `await engine.dispose()` on the global engine.
+      — Bumped the "Pre-warmed N..." completion log from
+        logger.info to logger.warning so it surfaces under
+        the worker's --loglevel=warning config.
+
+
+[2026-05-07 PROD DEPLOY] EXTEND NULLPOOL FIX TO process_shift_note +
+                          send_morning_digests
+
+CONTEXT:
+- Earlier today's notes flagged the latent loop-mismatch bug in
+  process_shift_note and send_morning_digests: both call
+  asyncio.run() inside a Celery prefork worker and use the
+  global pooled engine from app.db.session. The bug only
+  reliably manifested on prewarm because login traffic is dense
+  enough to put two tasks back-to-back in the same worker
+  process; the other two tasks rarely hit it because their
+  traffic is sparse. Closing the latent risk now while the
+  pattern is fresh.
+
+CHANGES:
+
+1. SHARED EPHEMERAL-SESSION HELPER (backend/app/workers/tasks.py):
+   - New `_run_with_ephemeral_session(inner_fn, *args, **kwargs)`.
+     Builds a per-call NullPool engine + async_sessionmaker,
+     calls `inner_fn(*args, session_factory=<factory>, **kwargs)`,
+     and disposes the engine in a finally block.
+   - Single source of truth for the workaround. Comment in the
+     helper documents the loop-mismatch root cause so future
+     contributors don't accidentally reintroduce the shared
+     engine inside a Celery task.
+
+2. process_shift_note → uses the helper:
+   - Wrapper: `asyncio.run(_run_with_ephemeral_session(
+       run_pipeline, note_uuid))`.
+   - app/workers/pipeline_tasks.py: `run_pipeline` gained an
+     optional keyword arg `session_factory=None`. If None,
+     falls back to the pooled SessionLocal (preserves any
+     non-Celery callers, though there are currently none).
+   - The internal `async with session_factory() as db:` block
+     replaces the old `async with SessionLocal() as db:`.
+
+3. send_morning_digests → uses the helper:
+   - Wrapper: `asyncio.run(_run_with_ephemeral_session(
+       _run_digest_dispatcher))`.
+   - `_run_digest_dispatcher` gained `session_factory=None`
+     kwarg with the same SessionLocal fallback.
+   - Removed the inner `from app.db.session import SessionLocal`;
+     dependency now comes from the kwarg.
+
+4. prewarm_carecards → consolidated onto the helper:
+   - Removed the inline NullPool engine setup that was added
+     in this session's earlier rounds.
+   - Removed the `_prewarm_loop` extraction (its only purpose
+     was to receive the SessionFactory from the inline setup).
+   - `_run_prewarm_carecards(user_id_s, agency_id_s, role, *,
+     session_factory)` now does everything in one function and
+     receives the factory the same way the other two tasks do.
+   - Final shape of the three tasks is now uniform — every
+     async-from-Celery task in this codebase runs on a
+     short-lived NullPool engine that disposes before the
+     asyncio.run() loop exits.
+
+VERIFICATION:
+- python -m py_compile on tasks.py + pipeline_tasks.py: clean.
+- docker build --platform linux/amd64 → image
+  sha256:da6977b4407ed0298d0ab0cacba5e6375dd0e88cba8e1448385e7e508a93c64f
+- Pushed to BOTH daliyaflow-backend and daliyaflow-worker ECR
+  repos (the API image has the new pipeline_tasks.py too,
+  even though FastAPI doesn't run those tasks itself, to keep
+  the two images byte-identical).
+- Force-new-deployment on daliyaflow-worker (backend service
+  not redeployed — no API code changed). services-stable
+  waiter exited 0.
+- /health → 200, db ok, redis ok.
+- Live verification of process_shift_note and
+  send_morning_digests is deferred to natural traffic:
+  the next handoff submission exercises run_pipeline; the
+  next 06:30-local-time tick exercises the digest path.
+  prewarm continues to be the dense-traffic canary —
+  next coordinator login will exercise the consolidated
+  helper directly.
+
+FILES TOUCHED:
+  Backend:
+    backend/app/workers/tasks.py
+      — Added `_run_with_ephemeral_session` helper.
+      — `process_shift_note` and `send_morning_digests`
+        wrappers now go through the helper.
+      — `_run_digest_dispatcher` accepts `session_factory`.
+      — Removed inline NullPool setup and `_prewarm_loop` from
+        the prewarm path; folded back into a single
+        `_run_prewarm_carecards(..., *, session_factory)`.
+    backend/app/workers/pipeline_tasks.py
+      — `run_pipeline` accepts `session_factory=None`,
+        defaults to SessionLocal.
+
+NOTES:
+- The helper passes `session_factory` as a keyword argument
+  to make accidental positional collisions impossible — every
+  inner function declares it after a `*,` so it's keyword-only.
+- The pooled engine in app.db.session is unchanged; FastAPI
+  request handlers continue to use it as before. The fix is
+  Celery-side only.
+- One small ergonomic risk: any future async-from-Celery task
+  added without going through `_run_with_ephemeral_session`
+  will quietly inherit the latent bug. Worth a future
+  follow-up to enforce this via a custom Task base class
+  that wraps the body in `_run_with_ephemeral_session`
+  automatically — left as a TODO since two of the three
+  tasks already use the helper directly and it's easy to
+  copy-paste correctly.

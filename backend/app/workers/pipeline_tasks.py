@@ -34,8 +34,10 @@ from app.services.pattern_service import check_flag_patterns
 logger = logging.getLogger(__name__)
 
 
-async def run_pipeline(note_id: uuid.UUID) -> dict:
-    async with SessionLocal() as db:
+async def run_pipeline(note_id: uuid.UUID, *, session_factory=None) -> dict:
+    if session_factory is None:
+        session_factory = SessionLocal
+    async with session_factory() as db:
         note = await db.get(ShiftNoteRaw, note_id)
         if note is None:
             return {"status": "failed", "reason": "note_not_found"}

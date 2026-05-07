@@ -74,6 +74,36 @@ class BaseTask(Task):
         super().on_success(retval, task_id, args, kwargs)
 
 
+async def _run_with_ephemeral_session(inner_fn, *args, **kwargs):
+    """Run inner_fn(*args, session_factory=<NullPool factory>, **kwargs).
+
+    Each Celery task runs in a fresh asyncio.run() loop. The shared engine
+    in app.db.session caches asyncpg connections bound to whichever loop
+    opened them; reusing them across loops trips "Future attached to a
+    different loop", and disposing the shared pool fails the same way
+    (cached connections need their original loop to clean up). So we build
+    a single-use NullPool engine local to this loop and dispose it before
+    the loop exits.
+    """
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import settings as _settings
+
+    engine = create_async_engine(_settings.DATABASE_URL, poolclass=NullPool)
+    session_factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    try:
+        return await inner_fn(*args, session_factory=session_factory, **kwargs)
+    finally:
+        await engine.dispose()
+
+
 @celery_app.task(name="daliyaflow.health_ping", base=BaseTask)
 def health_ping() -> str:
     return "ok"
@@ -99,7 +129,7 @@ def process_shift_note(self, note_id: str) -> dict:  # noqa: ARG001
         note_uuid = uuid.UUID(note_id)
     except ValueError as exc:
         raise ValueError(f"Bad note_id: {note_id}") from exc
-    return asyncio.run(run_pipeline(note_uuid))
+    return asyncio.run(_run_with_ephemeral_session(run_pipeline, note_uuid))
 
 
 @celery_app.task(name="daliyaflow.send_morning_digests", base=BaseTask)
@@ -111,14 +141,13 @@ def send_morning_digests() -> dict:
     to coordinators with morning_digest=True. This avoids needing per-agency
     beat entries — beat only fires one task and we filter by tz inside.
     """
-    return asyncio.run(_run_digest_dispatcher())
+    return asyncio.run(_run_with_ephemeral_session(_run_digest_dispatcher))
 
 
-async def _run_digest_dispatcher() -> dict:
+async def _run_digest_dispatcher(*, session_factory=None) -> dict:
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
 
-    from app.db.session import SessionLocal
     from app.models.agency import Agency
     from app.services.digest_service import (
         generate_agency_digest,
@@ -126,9 +155,12 @@ async def _run_digest_dispatcher() -> dict:
     )
     from app.services.email_service import send_morning_digest
 
+    if session_factory is None:
+        from app.db.session import SessionLocal as session_factory  # noqa: N813
+
     sent = 0
     skipped = 0
-    async with SessionLocal() as db:
+    async with session_factory() as db:
         from sqlalchemy import select as _select
 
         agencies = (await db.execute(_select(Agency))).scalars().all()
@@ -180,24 +212,27 @@ def prewarm_carecards(user_id: str, agency_id: str, role: str) -> dict:
     on individual clients log a warning and continue — the task as a whole
     must never raise.
     """
-    return asyncio.run(_run_prewarm_carecards(user_id, agency_id, role))
+    return asyncio.run(
+        _run_with_ephemeral_session(
+            _run_prewarm_carecards, user_id, agency_id, role
+        )
+    )
 
 
 async def _run_prewarm_carecards(
-    user_id_s: str, agency_id_s: str, role: str
+    user_id_s: str, agency_id_s: str, role: str, *, session_factory
 ) -> dict:
     from datetime import datetime as _dt, timedelta, timezone as _tz
 
     from sqlalchemy import select as _select
 
     from app.core.cache import get_carecard, set_carecard
-    from app.db.session import SessionLocal
     from app.models.client import Client
     from app.models.shift import Shift
     from app.services.continuity_service import build_carecard
 
-    REFRESH_THRESHOLD = timedelta(hours=1)
-    DELAY_BETWEEN_SECONDS = 0.5
+    refresh_threshold = timedelta(hours=1)
+    delay_between_seconds = 0.5
 
     try:
         user_uuid = uuid.UUID(user_id_s)
@@ -208,7 +243,7 @@ async def _run_prewarm_carecards(
         )
         return {"warmed": 0, "skipped": 0, "failed": 0}
 
-    async with SessionLocal() as db:
+    async with session_factory() as db:
         if role in {"coordinator", "supervisor", "admin"}:
             client_ids = (
                 await db.execute(
@@ -246,7 +281,7 @@ async def _run_prewarm_carecards(
                     if gen_at is not None:
                         if gen_at.tzinfo is None:
                             gen_at = gen_at.replace(tzinfo=_tz.utc)
-                        if now - gen_at < REFRESH_THRESHOLD:
+                        if now - gen_at < refresh_threshold:
                             skipped += 1
                             continue
 
@@ -260,7 +295,7 @@ async def _run_prewarm_carecards(
                 }
                 await set_carecard(client_id, payload)
                 warmed += 1
-                await asyncio.sleep(DELAY_BETWEEN_SECONDS)
+                await asyncio.sleep(delay_between_seconds)
             except Exception as exc:
                 failed += 1
                 logger.warning(
@@ -269,7 +304,10 @@ async def _run_prewarm_carecards(
                     str(exc)[:200],
                 )
 
-        logger.info(
+        # Logged at WARNING because the worker runs --loglevel=warning in
+        # prod; this lets us see successful prewarm completions in CloudWatch
+        # without changing the infrastructure log level globally.
+        logger.warning(
             "Pre-warmed %d carecards for user %s role %s "
             "(skipped=%d failed=%d total=%d)",
             warmed,

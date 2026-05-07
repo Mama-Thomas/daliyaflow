@@ -55,3 +55,4 @@ htmlcov/
 
 # Local-only secrets staged for AWS Secrets Manager
 infrastructure/.secrets/
+backend/.local-audio/
