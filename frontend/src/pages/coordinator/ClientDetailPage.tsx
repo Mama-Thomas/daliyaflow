@@ -21,7 +21,12 @@ import { handoffApi, flagsApi } from '@/api/handoff';
 import { flagsListApi } from '@/api/flags';
 import { coordinatorApi } from '@/api/coordinator';
 import { shiftsApi } from '@/api/shifts';
-import { formatCategory, relativeTime, formatTimeRange } from '@/utils/format';
+import {
+  DISPLAY_TIME_ZONE,
+  formatCategory,
+  relativeTime,
+  formatTimeRange,
+} from '@/utils/format';
 import { useUIStore } from '@/store/uiStore';
 import { cn } from '@/utils/cn';
 
@@ -423,7 +428,7 @@ export default function ClientDetailPage() {
                       >
                         <div>
                           <div className="text-sm font-medium text-ink">
-                            {new Date(s.scheduled_start).toLocaleDateString()}
+                            {new Date(s.scheduled_start).toLocaleDateString(undefined, { timeZone: DISPLAY_TIME_ZONE })}
                           </div>
                           <div className="text-xs text-muted-text font-mono">
                             {formatTimeRange(s.scheduled_start, s.scheduled_end)}
@@ -525,6 +530,7 @@ function FlagHistoryTab({
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: DISPLAY_TIME_ZONE,
     }).format(d);
   }
 

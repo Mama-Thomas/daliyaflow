@@ -14,7 +14,7 @@ import { dashboardApi } from '@/api/dashboard';
 import { Badge, BadgeVariant } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { formatCategory, relativeTime } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, formatCategory, relativeTime } from '@/utils/format';
 import { cn } from '@/utils/cn';
 import type { RiskSeverity, RiskStatus } from '@/types';
 
@@ -278,6 +278,7 @@ export function FlagDetailDrawer({
                         day: 'numeric',
                         hour: 'numeric',
                         minute: '2-digit',
+                        timeZone: DISPLAY_TIME_ZONE,
                       },
                     )}
                   </span>

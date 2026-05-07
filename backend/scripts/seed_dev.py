@@ -12,8 +12,23 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+
+
+PT = ZoneInfo("America/Los_Angeles")
+
+
+def pt_at(days_offset: int, hour: int) -> datetime:
+    """Return a UTC datetime for `hour:00` Pacific time, offset by `days_offset`
+    days from PT-today. Lets the seed talk in human-meaningful PT wall times
+    (8am morning, 2pm afternoon) while still storing UTC in the DB. PST/PDT
+    swap is handled automatically by zoneinfo.
+    """
+    today_pt = datetime.now(PT).replace(hour=0, minute=0, second=0, microsecond=0)
+    target_pt = today_pt + timedelta(days=days_offset, hours=hour)
+    return target_pt.astimezone(timezone.utc)
 
 from app.core.security import hash_password
 from app.db.session import SessionLocal
@@ -225,24 +240,25 @@ async def main() -> int:
     #   caregiver3 (Aisha):  1+ shift dated today
     # Past + future shifts round out the dataset for handoff history,
     # continuity scoring, and dashboard widgets.
-    now = datetime.now(timezone.utc)
-    today_at = lambda h: now.replace(hour=h, minute=0, second=0, microsecond=0)
-
+    #
+    # All times are anchored in Pacific time (the agency's timezone, and
+    # the timezone the UI displays). Morning ≈ 6–10am PT, afternoon
+    # ≈ 2–6pm PT, evening ≈ 6–10pm PT.
     shifts_to_seed = [
         # — Past completed (drives handoff history + recent submissions). —
-        (clients[3], caregivers[0], now - timedelta(days=2, hours=4), "completed"),
-        (clients[4], caregivers[1], now - timedelta(days=1, hours=8), "completed"),
-        (clients[2], caregivers[2], now - timedelta(days=1, hours=4), "completed"),
-        (clients[2], caregivers[0], now - timedelta(days=3, hours=2), "completed"),
-        (clients[0], caregivers[2], now - timedelta(hours=20), "completed"),
+        (clients[3], caregivers[0], pt_at(-2, 14), "completed"),  # afternoon
+        (clients[4], caregivers[1], pt_at(-1, 10), "completed"),  # morning
+        (clients[2], caregivers[2], pt_at(-1, 14), "completed"),  # afternoon
+        (clients[2], caregivers[0], pt_at(-3, 18), "completed"),  # evening
+        (clients[0], caregivers[2], pt_at(-1, 8), "completed"),   # morning
         # — Today's shifts. caregiver1 has TWO; caregiver2 and 3 have ONE each. —
-        (clients[0], caregivers[0], today_at(8), "in_progress"),
-        (clients[1], caregivers[0], today_at(14), "scheduled"),
-        (clients[2], caregivers[1], today_at(10), "in_progress"),
-        (clients[4], caregivers[2], today_at(18), "scheduled"),
+        (clients[0], caregivers[0], pt_at(0, 8), "in_progress"),  # morning
+        (clients[1], caregivers[0], pt_at(0, 14), "scheduled"),   # afternoon
+        (clients[2], caregivers[1], pt_at(0, 10), "in_progress"), # morning
+        (clients[4], caregivers[2], pt_at(0, 18), "scheduled"),   # evening
         # — Future scheduled shifts (Shifts page on +1 day, etc.). —
-        (clients[3], caregivers[1], now + timedelta(days=1), "scheduled"),
-        (clients[1], caregivers[2], now + timedelta(days=1, hours=6), "scheduled"),
+        (clients[3], caregivers[1], pt_at(1, 9), "scheduled"),    # morning
+        (clients[1], caregivers[2], pt_at(1, 15), "scheduled"),   # afternoon
     ]
 
     seeded_shifts: list[Shift] = []

@@ -5,7 +5,7 @@ import { Download, Leaf, RefreshCw, Users } from 'lucide-react';
 import { Card, EmptyState, SkeletonCard } from '@/components/ui';
 import { dashboardApi, ShiftBriefClient } from '@/api/dashboard';
 import { clientsApi } from '@/api/clients';
-import { fullDate, relativeTime } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, fullDate, relativeTime } from '@/utils/format';
 import { cn } from '@/utils/cn';
 
 function briefGreeting(date = new Date()): string {
@@ -202,7 +202,9 @@ export function ShiftBriefCard() {
       })
       .join('');
 
-    const generatedAt = new Date().toLocaleString();
+    const generatedAt = new Date().toLocaleString(undefined, {
+      timeZone: DISPLAY_TIME_ZONE,
+    });
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>

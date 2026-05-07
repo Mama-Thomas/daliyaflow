@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Button, Card, SkeletonCard } from '@/components/ui';
 import { clientsApi } from '@/api/clients';
+import { DISPLAY_TIME_ZONE } from '@/utils/format';
 
 export function CareCardModal({
   clientId,
@@ -44,7 +45,7 @@ export function CareCardModal({
             <h2 className="font-display text-2xl text-ink">Shift briefing</h2>
             {data && (
               <p className="text-xs text-muted-text font-mono mt-1">
-                Generated {new Date(data.generated_at).toLocaleString()}
+                Generated {new Date(data.generated_at).toLocaleString(undefined, { timeZone: DISPLAY_TIME_ZONE })}
               </p>
             )}
           </div>
@@ -113,7 +114,7 @@ export function CareCardModal({
 
               <p className="text-[10px] text-muted-text text-center pt-4 border-t border-border">
                 DaliyaFlow · Generated{' '}
-                {new Date(data.generated_at).toLocaleString()}
+                {new Date(data.generated_at).toLocaleString(undefined, { timeZone: DISPLAY_TIME_ZONE })}
               </p>
             </>
           ) : null}

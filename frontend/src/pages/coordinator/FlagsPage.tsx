@@ -12,7 +12,7 @@ import {
 } from '@/components/ui';
 import { flagsListApi } from '@/api/flags';
 import { clientsApi } from '@/api/clients';
-import { formatCategory, relativeTime } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, formatCategory, relativeTime } from '@/utils/format';
 import { useUIStore } from '@/store/uiStore';
 import { cn } from '@/utils/cn';
 
@@ -118,6 +118,7 @@ export default function FlagsPage() {
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: DISPLAY_TIME_ZONE,
     }).format(d);
   }
 

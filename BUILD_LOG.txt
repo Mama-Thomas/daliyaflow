@@ -3922,3 +3922,279 @@ NOTES:
   the source-note multilingual block needs a manual test in
   the deployed UI. Backend `/health` is the only automated
   smoke that ran.
+
+
+[2026-05-07 PROD DEPLOY] DISPLAY ALL TIMES IN PACIFIC TIME
+
+CONTEXT:
+- All timestamps are stored in UTC and were rendered with the
+  browser's local timezone via JS `toLocaleString` /
+  `toLocaleDateString` / `toLocaleTimeString` defaults.
+  Coordinators and caregivers in different cities saw
+  different wall-clock times for the same shift. The product
+  decision is to render every time in Pacific time
+  (America/Los_Angeles, which automatically swings between
+  PST and PDT) so everyone reads the same handoff the same
+  way. Storage is unchanged — UTC in the DB, Pacific only
+  in the UI.
+
+CHANGES:
+
+1. Centralised constant in frontend/src/utils/format.ts:
+     export const DISPLAY_TIME_ZONE = 'America/Los_Angeles';
+   Shared by every formatter and every inline call site so
+   "find usages" is grep-able. The IANA zone string handles
+   PST/PDT automatically.
+
+2. Updated formatters in format.ts:
+   - formatTimeRange now passes timeZone: DISPLAY_TIME_ZONE.
+   - fullDate now passes timeZone: DISPLAY_TIME_ZONE.
+   - timeOfDayGreeting derived the hour from
+     date.getHours() (browser-local). Switched to a small
+     ptHour() helper that uses Intl.DateTimeFormat with the
+     PT timezone, hour12: false, and parses the resulting
+     "hour" part. Greeting is now consistent with the rest
+     of the UI regardless of where the caregiver is sitting.
+   - relativeTime (X minutes/hours/days ago) is unchanged —
+     elapsed-duration math is timezone-independent.
+   - todayISODate is unchanged. It returns a UTC YYYY-MM-DD
+     string used as a query param to the backend, which
+     filters shifts by UTC day. Changing it would shift API
+     semantics (out of scope for "display only").
+   - New formatYmdAsDate(yyyymmdd) helper. Direct
+     `new Date('2026-05-07').toLocaleDateString({ timeZone:
+     'America/Los_Angeles' })` would render "May 6, 2026"
+     because the parsed UTC midnight is 5 PM PT the previous
+     day. The helper anchors at noon UTC, which falls on the
+     same calendar date in any US zone, so the displayed
+     date matches the input string.
+
+3. Inline call sites — added `timeZone: DISPLAY_TIME_ZONE`
+   to every options object that goes into a date/time render:
+     components/coordinator/TeamManagement.tsx (Last login)
+     components/coordinator/ShiftBriefCard.tsx (printed
+                                  "Generated" timestamp)
+     components/coordinator/CareCardModal.tsx (Generated
+                                  timestamps, two places)
+     components/coordinator/PriorityQueue.tsx (Shift at risk
+                                  start time)
+     components/flags/FlagDetailDrawer.tsx (Shift context)
+     pages/coordinator/ClientDetailPage.tsx (recent-shift
+                                  date column +
+                                  formatExactTimestamp)
+     pages/coordinator/FlagsPage.tsx (formatExactTimestamp)
+     pages/coordinator/ShiftsPage.tsx (heading "Shifts on X"
+                                  now uses formatYmdAsDate)
+     pages/coordinator/SettingsPage.tsx (session "expires X")
+     pages/caregiver/HandoffSubmissionPage.tsx (Draft saved
+                                  timestamp)
+     pages/caregiver/QuickActionsPage.tsx (today's shift
+                                  time range)
+     pages/caregiver/PriorHandoffsPage.tsx (handoff
+                                  timestamp in history)
+
+VERIFICATION:
+- npm run build succeeds; vite emits new chunks for every
+  page that touched a date format.
+- S3 sync + index.html upload + CloudFront invalidation
+  I73Z2ENNCE1EO2XC9P1IFP6KJM created.
+
+FILES TOUCHED:
+  Frontend only (no backend changes — this is purely display):
+    frontend/src/utils/format.ts
+    frontend/src/components/coordinator/TeamManagement.tsx
+    frontend/src/components/coordinator/ShiftBriefCard.tsx
+    frontend/src/components/coordinator/CareCardModal.tsx
+    frontend/src/components/coordinator/PriorityQueue.tsx
+    frontend/src/components/flags/FlagDetailDrawer.tsx
+    frontend/src/pages/coordinator/ClientDetailPage.tsx
+    frontend/src/pages/coordinator/FlagsPage.tsx
+    frontend/src/pages/coordinator/ShiftsPage.tsx
+    frontend/src/pages/coordinator/SettingsPage.tsx
+    frontend/src/pages/caregiver/HandoffSubmissionPage.tsx
+    frontend/src/pages/caregiver/QuickActionsPage.tsx
+    frontend/src/pages/caregiver/PriorHandoffsPage.tsx
+
+NOTES:
+- The pattern is "pass timeZone option, never depend on the
+  browser default." Any new date-formatting site added later
+  should import DISPLAY_TIME_ZONE and pass it. Worth a
+  future lint rule (no-restricted-syntax on toLocaleString
+  without timeZone) if drift becomes a recurring problem.
+- A subtle latent bug not addressed in this round: shift
+  filtering. todayISODate() returns UTC date. A caregiver
+  signing in at 11pm PT will see the *next* UTC date as
+  "today" and may miss late-running shifts. The fix would
+  be a PT-anchored todayISODate() PLUS a backend that
+  filters by an agency-local timezone. Both are bigger
+  changes than this PR — explicitly out of scope per the
+  user's instruction "only how they are displayed in the
+  UI."
+- CreateShiftModal still constructs UTC times from local
+  user inputs (`new Date(\`${date}T${customStart}:00Z\`)`)
+  — this is creation behavior, not display, and the spec
+  explicitly excludes storage changes. Coordinator who
+  enters 9:00 in the modal stores 9:00 UTC, which then
+  displays as 2:00 PT (PDT) or 1:00 PT (PST). Calling out
+  for follow-up — the create-shift modal should accept the
+  time in PT and convert to UTC at write time.
+
+
+[2026-05-07 PROD DEPLOY] CREATE-SHIFT MODAL ACCEPTS PT INPUT
+
+CONTEXT:
+- The previous round's note flagged that CreateShiftModal
+  built `T${customStart}:00Z` directly, treating user input
+  as UTC. Coordinators thinking in PT would type "09:00" and
+  get a shift stored as 09:00 UTC — displayed back as 02:00
+  PDT or 01:00 PST. Closing the loop now that the rest of
+  the app reads PT.
+
+CHANGES:
+
+1. utils/format.ts — two new helpers:
+   - ptOffsetForWallTime(yyyymmdd, hhmm): figures out whether
+     PT is on PDT (-07:00) or PST (-08:00) for the given
+     wall-clock moment. Builds a "naïve UTC" Date with the
+     same calendar fields the user typed, then asks
+     Intl.DateTimeFormat({ timeZone: 'America/Los_Angeles',
+     timeZoneName: 'longOffset' }) what offset PT had at
+     that real-time instant. For any non-DST-transition
+     moment the offset matches what applies to the wall
+     time the user meant.
+   - ptWallTimeToUtcIso(yyyymmdd, hhmm): the public helper.
+     Builds an ISO string with the offset baked in and
+     normalizes via toISOString() to '...Z'.
+       ptWallTimeToUtcIso('2026-08-15', '09:00')
+         → '2026-08-15T16:00:00.000Z'  (PDT)
+       ptWallTimeToUtcIso('2026-12-15', '09:00')
+         → '2026-12-15T17:00:00.000Z'  (PST)
+   - todayPtIsoDate(d?): YYYY-MM-DD for "today in PT".
+     Different from todayISODate() which is UTC-today and
+     used as an API query key. todayPtIsoDate is for
+     defaulting <input type="date"> fields the user thinks
+     of in PT.
+
+2. components/coordinator/CreateShiftModal.tsx:
+   - Date default switched from
+     `today.toISOString().slice(0, 10)` (UTC date) to
+     `todayPtIsoDate()`. A coordinator opening the modal at
+     11pm PT no longer sees tomorrow's date prefilled.
+   - Custom-times path now uses
+     `ptWallTimeToUtcIso(date, customStart/customEnd)`
+     instead of stamping `:00Z` onto the wall-clock input.
+   - Template path uses `ptWallTimeToUtcIso(date, '00:00')`
+     so the date alone is still well-defined if the backend
+     retains our value rather than overwriting from the
+     template's stored times. (Investigation: backend
+     resolves template times server-side; this is a
+     belt-and-suspenders hedge.)
+   - Added a small "Times are in Pacific time." caption
+     under the start/end inputs so coordinators don't have
+     to guess. Subtle muted text — not a banner.
+
+VERIFICATION:
+- npm run build clean.
+- S3 sync + index.html upload + CloudFront invalidation
+  I1KNZ6SV2IIB3QPNZOHGULBMZX created.
+
+FILES TOUCHED:
+  Frontend only:
+    frontend/src/utils/format.ts
+    frontend/src/components/coordinator/CreateShiftModal.tsx
+
+NOTES:
+- DST-transition edge cases: on the spring-forward day the
+  2 AM hour does not exist in PT; on the fall-back day the
+  1 AM hour exists twice. ptOffsetForWallTime resolves both
+  via Intl's pick (which is the JS engine's pick; typically
+  the post-transition offset for ambiguous fall-back times).
+  Acceptable for shift scheduling — almost no shifts start
+  at 1:30 AM, and the displayed result on read-back is
+  unambiguous either way.
+- The other UTC-anchored writers in the codebase (none
+  found at the time of this change beyond CreateShiftModal)
+  should adopt the same pattern. If a future user-typed
+  date/time goes to the API, route it through
+  ptWallTimeToUtcIso unless the field is genuinely a UTC
+  timestamp (e.g., audit metadata).
+
+
+[2026-05-07 PROD RESEED] SEED_DEV ANCHORS SHIFTS IN PACIFIC TIME
+
+CONTEXT:
+- backend/scripts/seed_dev.py used `now.replace(hour=h, ...)`
+  with a UTC `now`, so demo shifts were stored with UTC
+  hour-of-day. After the UI switched to PT display, the
+  seed's "8 AM today" shift was rendering as "1 AM PT" —
+  out of band with the morning/afternoon/evening windows
+  the demo expects.
+
+CHANGES:
+
+1. backend/scripts/seed_dev.py:
+   - New PT-anchored helper at module scope:
+       PT = ZoneInfo('America/Los_Angeles')
+       def pt_at(days_offset: int, hour: int) -> datetime:
+           today_pt = datetime.now(PT).replace(
+               hour=0, minute=0, second=0, microsecond=0)
+           target_pt = today_pt + timedelta(
+               days=days_offset, hours=hour)
+           return target_pt.astimezone(timezone.utc)
+     PST/PDT swap is automatic via zoneinfo. Returns UTC so
+     the DB still stores UTC.
+   - shifts_to_seed rewritten to use pt_at(days, hour) for
+     every entry (past, today, future) with the PT hours
+     spec'd by product:
+       Morning: 6–10 AM PT (used 8, 9, 10)
+       Afternoon: 2–6 PM PT (used 14, 15)
+       Evening: 6–10 PM PT (used 18)
+     Distribution unchanged — caregiver1 still has 2 today,
+     caregiver2 has 1 today, caregiver3 has 1 today; 5 past
+     completed for handoff history; 2 future scheduled.
+   - Removed the `now = datetime.now(timezone.utc)` and
+     `today_at = lambda h: now.replace(...)` lines — both
+     superseded by pt_at().
+
+2. Reseed in production:
+   - Image rebuilt --platform linux/amd64
+     (sha256:61a2ecffd02b7b6b1d14f6b752090a11faef48137fb762aa8840cc40a2ea92dc)
+     and pushed to BOTH daliyaflow-backend and
+     daliyaflow-worker ECR repos.
+   - Ran one-off ECS task with command override
+     ["python", "-m", "scripts.seed_dev"]. Task exited 0.
+     Backend logs:
+       Agency:       Sunrise Home Care (sunrise-home-care)
+       Shifts:       11
+       Handoffs run: 6
+   - The seed's idempotent (agency, client, caregiver,
+     scheduled_start) check means the previous wrong-time
+     shifts from earlier seed runs persist alongside the
+     new PT-anchored ones — same pattern called out in the
+     2026-05-04 seed entry. Demo flows hit the new shifts
+     because they're at the times coordinators expect; the
+     leftovers are background noise that show up only on
+     the all-shifts view.
+
+VERIFICATION:
+- python -m py_compile on seed_dev.py: clean.
+- ECS run-task exit 0; CloudWatch confirms "Seed complete"
+  with 11 shifts + 6 handoffs run.
+
+FILES TOUCHED:
+  Backend only:
+    backend/scripts/seed_dev.py
+
+NOTES:
+- run_pipeline is still called directly inside the seed
+  rather than via Celery. Since the seed is a single
+  short-lived asyncio.run() process, the pooled-engine /
+  loop-mismatch issue that affected Celery prefork doesn't
+  apply here — the global pool is bound to the one loop
+  that runs the seed.
+- If the leftover wrong-time demo shifts ever start
+  cluttering the demo, the cleanup is a small
+  `delete_old_seed_shifts.py` script keyed off
+  `agency_id == sunrise + scheduled_start NOT IN
+  current_pt_anchored_set`. Not done in this round —
+  destructive cleanup wasn't asked for.

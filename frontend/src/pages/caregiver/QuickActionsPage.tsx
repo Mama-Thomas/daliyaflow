@@ -5,7 +5,7 @@ import { useAuthStore } from '@/store/authStore';
 import { Button, Card, EmptyState, SkeletonCard } from '@/components/ui';
 import { shiftsApi, Shift } from '@/api/shifts';
 import { clientsApi } from '@/api/clients';
-import { todayISODate } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, todayISODate } from '@/utils/format';
 
 export default function QuickActionsPage() {
   const user = useAuthStore((s) => s.user);
@@ -42,6 +42,7 @@ export default function QuickActionsPage() {
       new Date(iso).toLocaleTimeString([], {
         hour: 'numeric',
         minute: '2-digit',
+        timeZone: DISPLAY_TIME_ZONE,
       });
     return `${t(s.scheduled_start)} – ${t(s.scheduled_end)}`;
   }

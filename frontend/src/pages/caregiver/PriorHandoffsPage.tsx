@@ -6,6 +6,7 @@ import { Card, EmptyState, SkeletonCard } from '@/components/ui';
 import { HandoffSummaryBlock } from '@/components/handoff/HandoffSummaryBlock';
 import { clientsApi } from '@/api/clients';
 import { cn } from '@/utils/cn';
+import { DISPLAY_TIME_ZONE } from '@/utils/format';
 
 export default function PriorHandoffsPage() {
   const { clientId = '' } = useParams<{ clientId: string }>();
@@ -68,6 +69,7 @@ export default function PriorHandoffsPage() {
                           day: 'numeric',
                           hour: 'numeric',
                           minute: '2-digit',
+                          timeZone: DISPLAY_TIME_ZONE,
                         })}
                       </div>
                       <div className="text-xs text-muted-text">

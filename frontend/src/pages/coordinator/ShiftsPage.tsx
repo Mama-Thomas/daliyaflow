@@ -15,7 +15,12 @@ import { clientsApi } from '@/api/clients';
 import { CareCardModal } from '@/components/coordinator/CareCardModal';
 import { CreateShiftModal, colorFor } from '@/components/coordinator/CreateShiftModal';
 import { useAuthStore } from '@/store/authStore';
-import { clientShortName, formatTimeRange, todayISODate } from '@/utils/format';
+import {
+  clientShortName,
+  formatTimeRange,
+  formatYmdAsDate,
+  todayISODate,
+} from '@/utils/format';
 import { useUIStore } from '@/store/uiStore';
 import { cn } from '@/utils/cn';
 
@@ -107,7 +112,7 @@ export default function CoordinatorShiftsPage() {
 
       <section>
         <h2 className="font-display text-lg text-ink mb-3">
-          Shifts on {new Date(date).toLocaleDateString()}
+          Shifts on {formatYmdAsDate(date)}
         </h2>
         {shiftsQuery.isLoading ? (
           <SkeletonCard />

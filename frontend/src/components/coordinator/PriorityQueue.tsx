@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CalendarClock, ArrowRight } from 'lucide-react';
 import { Badge, Card, EmptyState, SkeletonCard } from '@/components/ui';
 import { dashboardApi, PriorityItem } from '@/api/dashboard';
-import { formatCategory, relativeTime } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, formatCategory, relativeTime } from '@/utils/format';
 
 function severityDot(severity: 'high' | 'medium' | 'low') {
   const map = {
@@ -52,6 +52,7 @@ function ShiftItem({
     weekday: 'short',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone: DISPLAY_TIME_ZONE,
   });
   return (
     <li className="flex items-start gap-3 py-3 border-b border-border last:border-b-0">

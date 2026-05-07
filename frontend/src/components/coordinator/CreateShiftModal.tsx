@@ -8,6 +8,7 @@ import { clientsApi } from '@/api/clients';
 import { useUIStore } from '@/store/uiStore';
 import { invitationsApi } from '@/api/users';
 import { cn } from '@/utils/cn';
+import { ptWallTimeToUtcIso, todayPtIsoDate } from '@/utils/format';
 
 export function CreateShiftModal({
   open,
@@ -46,8 +47,7 @@ export function CreateShiftModal({
 
   useEffect(() => {
     if (!open) return;
-    const today = new Date();
-    setDate(today.toISOString().slice(0, 10));
+    setDate(todayPtIsoDate());
     setClientId('');
     setCaregiverId('');
     setTemplateId(null);
@@ -57,12 +57,18 @@ export function CreateShiftModal({
 
   const create = useMutation({
     mutationFn: () => {
+      // Date + times entered in this modal are Pacific wall-clock —
+      // matching how every shift renders elsewhere in the UI. Convert to
+      // UTC at write time so the API layer keeps storing UTC. For the
+      // template path the backend resolves the actual start/end from the
+      // template; we anchor at 00:00 PT so the SHIFT date itself doesn't
+      // skew by a day in case the backend retains our value.
       const startISO = templateId
-        ? new Date(`${date}T00:00:00Z`).toISOString()
-        : new Date(`${date}T${customStart}:00Z`).toISOString();
+        ? ptWallTimeToUtcIso(date, '00:00')
+        : ptWallTimeToUtcIso(date, customStart);
       const endISO = templateId
-        ? new Date(`${date}T00:00:00Z`).toISOString()
-        : new Date(`${date}T${customEnd}:00Z`).toISOString();
+        ? ptWallTimeToUtcIso(date, '00:00')
+        : ptWallTimeToUtcIso(date, customEnd);
       return shiftsApi.create({
         client_id: clientId,
         caregiver_id: caregiverId,
@@ -191,19 +197,24 @@ export function CreateShiftModal({
           </div>
 
           {templateId === null && (
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                label="Start time"
-                type="time"
-                value={customStart}
-                onChange={(e) => setCustomStart(e.target.value)}
-              />
-              <Input
-                label="End time"
-                type="time"
-                value={customEnd}
-                onChange={(e) => setCustomEnd(e.target.value)}
-              />
+            <div>
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  label="Start time"
+                  type="time"
+                  value={customStart}
+                  onChange={(e) => setCustomStart(e.target.value)}
+                />
+                <Input
+                  label="End time"
+                  type="time"
+                  value={customEnd}
+                  onChange={(e) => setCustomEnd(e.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-text mt-1">
+                Times are in Pacific time.
+              </p>
             </div>
           )}
         </div>

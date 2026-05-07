@@ -35,7 +35,7 @@ import {
 } from '@/api/handoff';
 import { shiftsApi } from '@/api/shifts';
 import { clientsApi } from '@/api/clients';
-import { formatCategory, fullDate } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, formatCategory, fullDate } from '@/utils/format';
 import { getApiErrorMessage } from '@/api/client';
 import { cn } from '@/utils/cn';
 
@@ -609,6 +609,7 @@ export default function HandoffSubmissionPage() {
                       ? `Draft saved ${savedAt.toLocaleTimeString(undefined, {
                           hour: 'numeric',
                           minute: '2-digit',
+                          timeZone: DISPLAY_TIME_ZONE,
                         })}`
                       : ''}
                   </span>

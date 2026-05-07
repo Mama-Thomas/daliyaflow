@@ -9,7 +9,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useUIStore, NotificationPreferences } from '@/store/uiStore';
 import { authApi } from '@/api/auth';
 import { useNavigate } from 'react-router-dom';
-import { relativeTime } from '@/utils/format';
+import { DISPLAY_TIME_ZONE, relativeTime } from '@/utils/format';
 
 export default function SettingsPage() {
   const user = useAuthStore((s) => s.user);
@@ -264,7 +264,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="text-xs text-muted-text font-mono">
                   Last seen {relativeTime(s.created_at)} · expires{' '}
-                  {new Date(s.expires_at).toLocaleDateString()}
+                  {new Date(s.expires_at).toLocaleDateString(undefined, { timeZone: DISPLAY_TIME_ZONE })}
                 </div>
               </div>
               <Button

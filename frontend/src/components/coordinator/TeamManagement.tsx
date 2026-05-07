@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Mail, Trash2, UserPlus } from 'lucide-react';
 import { Badge, Button, Card, Input } from '@/components/ui';
 import { invitationsApi, type InvitableRole, type UserSummary } from '@/api/users';
+import { DISPLAY_TIME_ZONE } from '@/utils/format';
 import { useAuthStore } from '@/store/authStore';
 import { useUIStore } from '@/store/uiStore';
 
@@ -290,7 +291,7 @@ function UserRow({
             {user.is_invitation
               ? 'Pending invite'
               : user.last_login_at
-                ? `Last login: ${new Date(user.last_login_at).toLocaleDateString()}`
+                ? `Last login: ${new Date(user.last_login_at).toLocaleDateString(undefined, { timeZone: DISPLAY_TIME_ZONE })}`
                 : 'No recent login'}
           </span>
         </div>
