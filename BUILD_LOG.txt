@@ -1390,7 +1390,7 @@ SPRINT 5 — PILOT READINESS (overnight session)
   "get or create" so re-running produces no duplicates. Seeds:
     Agency:    Sunrise Home Care (sunrise-home-care)
     Users:     6 (admin@/coordinator@/supervisor@/caregiver1-3@sunrise.test)
-    Password:  DevPassword123!
+    Password:  (set in seed script)
     Clients:   5 (Hal, Eleanor, Jim, Dot, George — each with a real care
                  context summary written in voice)
     Shifts:    10 (4 past completed, 1 today in-progress, 5 upcoming)
